@@ -1,0 +1,50 @@
+name: Build PerGameGpuSpoofer
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Branch, tag or commit of topjohnwu/zygisk-module-sample to take zygisk.hpp from.
+  # Pin this to a commit that contains the API v4 header if you want to be strict.
+  ZYGISK_REF: master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download zygisk.hpp
+        run: |
+          base="https://raw.githubusercontent.com/topjohnwu/zygisk-module-sample/${ZYGISK_REF}"
+          for p in module/jni/zygisk.hpp jni/zygisk.hpp; do
+            if curl -fsSL "$base/$p" -o jni/zygisk.hpp; then
+              echo "Downloaded $p"; break
+            fi
+          done
+          test -s jni/zygisk.hpp
+          grep -n "API_VERSION" jni/zygisk.hpp | head -n 5 || true
+
+      - name: Set up NDK
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+          add-to-path: true
+
+      - name: Build native libraries
+        run: |
+          ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            NDK_APPLICATION_MK=jni/Application.mk \
+            -j"$(nproc)"
+
+      - name: Copy libraries into module
+        run: |
+          mkdir -p module/zygisk
+          cp libs/arm64-v8a/libgpuspoofer.so   module/zygisk/arm64-v8a.so
+          cp libs/armeabi-v7a/libgpuspoofer.so module/zygisk/armeabi-v7a.so
+          ls
