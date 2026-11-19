@@ -329,13 +329,100 @@ static void *my_dlopen_ext(const char *file, int flags, const android_dlextinfo 
     return h;
 }
 
-       int fd = api_->connectCompanion();
+// ---------------------------------------------------------------------------
+// android.os.Build overwrite
+// ---------------------------------------------------------------------------
+static void set_build_field(JNIEnv *env, jclass cls, const char *field, const std::string &val) {
+    if (val.empty()) return;
+    jfieldID fid = env->GetStaticFieldID(cls, field, "Ljava/lang/String;");
+    if (!fid) {
+        env->ExceptionClear();  // e.g. SOC_* does not exist below Android 12
+        return;
+    }
+    jstring s = env->NewStringUTF(val.c_str());
+    if (!s) {
+        env->ExceptionClear();
+        return;
+    }
+    env->SetStaticObjectField(cls, fid, s);
+    env->DeleteLocalRef(s);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+static void override_build(JNIEnv *env) {
+    jclass cls = env->FindClass("android/os/Build");
+    if (!cls) {
+        env->ExceptionClear();
+        return;
+    }
+    set_build_field(env, cls, "HARDWARE", g_spoof.hw);
+    set_build_field(env, cls, "BOARD", g_spoof.plat);
+    set_build_field(env, cls, "SOC_MANUFACTURER", g_spoof.soc_mfr);
+    set_build_field(env, cls, "SOC_MODEL", g_spoof.soc);
+    env->DeleteLocalRef(cls);
+}
+
+// ---------------------------------------------------------------------------
+// Zygisk module
+// ---------------------------------------------------------------------------
+static std::string jstr(JNIEnv *env, jstring s) {
+    if (!s) return "";
+    const char *c = env->GetStringUTFChars(s, nullptr);
+    if (!c) return "";
+    std::string r(c);
+    env->ReleaseStringUTFChars(s, c);
+    return r;
+}
+
+class GpuSpooferModule : public zygisk::ModuleBase {
+public:
+    void onLoad(zygisk::Api *api, JNIEnv *env) override {
+        api_ = api;
+        env_ = env;
+    }
+
+    void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+        matched_ = false;
+        std::string name = jstr(env_, args->nice_name);
+        size_t colon = name.find(':');
+        if (colon != std::string::npos) name.resize(colon);  // com.pkg:service -> com.pkg
+
+        if (!name.empty()) {
+            std::string line = query_companion(name);
+            if (!line.empty() && parse_rule(line, g_spoof)) matched_ = true;
+        }
+        if (!matched_) {
+            api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+        }
+    }
+
+    void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
+        if (!matched_) return;
+        LOGI("spoofing %s -> %s / %s / hw=%s plat=%s soc=%s", g_spoof.pkg.c_str(),
+             g_spoof.renderer.c_str(), g_spoof.vendor.c_str(), g_spoof.hw.c_str(),
+             g_spoof.plat.c_str(), g_spoof.soc.c_str());
+        override_build(env_);
+        g_api = api_;
+        apply_hooks();
+    }
+
+    void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
+        api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+    }
+
+private:
+    zygisk::Api *api_ = nullptr;
+    JNIEnv *env_ = nullptr;
+    bool matched_ = false;
+
+    std::string query_companion(const std::string &pkg) {
+        int fd = api_->connectCompanion();
         if (fd < 0) {
             LOGW("connectCompanion failed");
             return "";
         }
         std::string result;
-         len = static_cast<uint32_t>(pkg.size());
+        uint32_t len = static_cast<uint32_t>(pkg.size());
         uint32_t rlen = 0;
         if (write_full(fd, &len, sizeof(len)) && write_full(fd, pkg.data(), len) &&
             read_full(fd, &rlen, sizeof(rlen)) && rlen > 0 && rlen <= 4096) {
