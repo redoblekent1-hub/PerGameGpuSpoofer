@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Per-Game GPU Spoofer</title>
+<style>
+  :root {
+    --bg: #101216; --card: #1a1d23; --text: #e6e8ec; --muted: #8b919c;
+    --accent: #6ea8fe; --danger: #ff6b6b; --ok: #51cf66; --border: #2a2e36;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f3f4f7; --card: #ffffff; --text: #1b1d22; --muted: #6a707c;
+      --accent: #1c6ed8; --danger: #d6336c; --ok: #2b8a3e; --border: #dcdfe5;
+      color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; font-size: 15px; }
+  h1 { font-size: 20px; margin: 4px 0 2px; }
+  p.sub { color: var(--muted); margin: 0 0 16px; font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+          padding: 14px; margin-bottom: 14px; }
+  .card h2 { font-size: 15px; margin: 0 0 10px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  input, select { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+                  background: var(--bg); color: var(--text); font-size: 15px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  button { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border);
+           background: var(--bg); color: var(--text); font-size: 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--danger); }
+  button.small { padding: 6px 10px; font-size: 12px; }
+  .rule { border-top: 1px solid var(--border); padding: 10px 0; }
+  .rule:first-child { border-top: 0; }
+  .rule .pkg { font-weight: 600; word-break: break-all; }
+  .rule .meta { color: var(--muted); font-size: 12px; margin-top: 2px; word-break: break-all; }
+  .empty { color: var(--muted); font-size: 13px; }
+  #status { position: sticky; bottom: 8px; padding: 10px 12px; border-radius: 10px;
+            background: var(--card); border: 1px solid var(--border); font-size: 13px; display: none; }
+  #status.ok { color: var(--ok); } #status.err { color: var(--danger); }
+</style>
+</head>
+<body>
+<h1>Per-Game GPU Spoofer</h1>
+<p class="sub">Rules apply only to the listed apps. Real device properties are never changed. Force-stop and relaunch a game after saving.</p>
+
+<div class="card">
+  <h2 id="formTitle">Add rule</h2>
+  <label for="pkg">Package name</label>
+  <input id="pkg" list="pkgList" placeholder="com.example.game" autocapitalize="off" autocomplete="off" spellcheck="false">
+  <datalist id="pkgList"></datalist>
+
+  <label for="preset">Preset</label>
+  <select id="preset"></select>
+
+  <div class="grid">
+    <div><label for="renderer">GL_RENDERER</label><input id="renderer" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="vendor">GL_VENDOR</label><input id="vendor" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="hw">Hardware (ro.hardware)</label><input id="hw" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="plat">Platform (ro.board.platform)</label><input id="plat" autocapitalize="off" spellcheck="false"></div>
+  </div>
+  <label for="soc">SoC model</label>
+  <input id="soc" autocapitalize="off" spellcheck="false">
+
+  <div class="row">
+    <button class="primary" id="addBtn">Add rule</button>
+    <button id="cancelBtn" style="display:none">Cancel edit</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Rules</h2>
+  <div id="rules"></div>
+  <div class="row">
+    <button class="primary" id="saveBtn">Save to config.txt</button>
+    <button id="reloadBtn">Reload</button>
+  </div>
+</div>
+
+<div id="status"></div>
+
+<script>
+"use strict";
+const CONFIG_DIR = "/data/adb/gpu_spoofer";
+const CONFIG_FILE = CONFIG_DIR + "/config.txt";
+const HEADER = "# pkg|renderer|vendor|hw|plat|soc";
+const PKG_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
+
+const PRESETS = {
+  adreno750: { label: "Adreno 750 (Snapdragon 8 Gen 3)", renderer: "Adreno (TM) 750", vendor: "Qualcomm", hw: "qcom", plat: "pineapple", soc: "SM8650" },
+  adreno740: { label: "Adreno 740 (Snapdragon 8 Gen 2)", renderer: "Adreno (TM) 740", vendor: "Qualcomm", hw: "qcom", plat: "kalama", soc: "SM8550" },
+  maliG720:  { label: "Mali-G720 (Dimensity 9300)", renderer: "Mali-G720-Immortalis MC12", vendor: "ARM", hw: "mt6989", plat: "mt6989", soc: "MT6989" },
+  maliG615:  { label: "Mali-G615 (Dimensity 8300)", renderer: "Mali-G615 MC6", vendor: "ARM", hw: "mt6897", plat: "mt6897", soc: "MT6897" },
+  unisoc:    { label: "Unisoc T820 / Mali-G57", renderer: "Mali-G57 MC4", vendor: "ARM", hw: "ums9620", plat: "ums9620", soc: "T820" }
+};
+
+let rules = [];
+let editIndex = -1;
+const $ = (id) => document.getElementById(id);
+const FIELDS = ["renderer", "vendor", "hw", "plat", "soc"];
+
+// ---- KernelSU bridge -------------------------------------------------------
+function exec(cmd) {
+  return new Promise((resolve, reject) => {
+    if (typeof ksu === "undefined" || typeof ksu.exec !== "function") {
+      reject(new Error("ksu.exec is unavailable - open this page from the KernelSU manager."));
+      return;
+    }
+    const cb = "exec_cb_" + Date.now() + "_" + Math.floor(Math.random() * 1e6);
+    window[cb] = (errno, stdout, stderr) => {
+      delete window[cb];
+      resolve({ errno, stdout, stderr });
+    };
+    try {
+      ksu.exec(cmd, JSON.stringify({}), cb);
+    } catch (e) {
+      delete window[cb];
+      reject(e);
+    }
+  });
+}
+
+function toast(msg, ok) {
+  const s = $("status");
+  s.textContent = msg;
+  s.className = ok ? "ok" : "err";
+  s.style.display = "block";
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => { s.style.display = "none"; }, 4000);
+}
+
+// ---- Presets / form --------------------------------------------------------
+function initPresets() {
+  const sel = $("preset");
+  const custom = document.createElement("option");
+  custom.value = ""; custom.textContent = "Custom";
+  sel.appendChild(custom);
+  Object.keys(PRESETS).forEach((k) => {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = PRESETS[k].label;
+    sel.appendChild(o);
+  });
+  sel.addEventListener("change", () => {
+    const p = PRESETS[sel.value];
+    if (!p) return;
+    FIELDS.forEach((f) => { $(f).value = p[f]; });
+  });
+}
+
+function readForm() {
+  const r = { pkg: $("pkg").value.trim() };
+  FIELDS.forEach((f) => { r[f] = $(f).value.trim(); });
+  return r;
+}
+
+function validate(r) {
+  if (!PKG_RE.test(r.pkg)) return "Invalid package name.";
+  for (const f of FIELDS) {
+    if (!r[f]) return "Field '" + f + "' is required.";
+    if (/[|\r\n]/.test(r[f])) return "Field '" + f + "' must not contain '|' or line breaks.";
+  }
+  return "";
+}
+
+function resetForm() {
+  editIndex = -1;
+  $("pkg").value = "";
+  $("preset").value = "";
+  FIELDS.forEach((f) => { $(f).value = ""; });
+  $("formTitle").textContent = "Add rule";
+  $("addBtn").textContent = "Add rule";
+  $("cancelBtn").style.display = "none";
+}
+
+function addOrUpdate() {
+  const r = readForm();
+  const err = validate(r);
+  if (err) { toast(err, false); return; }
+  if (editIndex >= 0) {
+    rules[editIndex] = r;
+  } else {
+    const i = rules.findIndex((x) => x.pkg === r.pkg);
+    if (i >= 0) rules[i] = r; else rules.push(r);
+  }
+  resetForm();
+  renderRules();
+  toast("Rule staged. Press 'Save to config.txt' to apply.", true);
+}
+
+// ---- Rules list ------------------------------------------------------------
+function renderRules() {
+  const box = $("rules");
+  box.textContent = "";
+  if (!rules.length) {
+    const e = document.createElement("div");
+    e.className = "empty";
+    e.textContent = "No rules yet.";
+    box.appendChild(e);
+    return;
+  }
+  rules.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "rule";
+    const pkg = document.createElement("div");
+    pkg.className = "pkg"; pkg.textContent = r.pkg;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = [r.renderer, r.vendor, r.hw, r.plat, r.soc].join("  |  ");
+    const actions = document.createElement("div");
+    actions.className = "row";
+    actions.style.marginTop = "8px";
+
+    const edit = document.createElement("button");
+    edit.className = "small"; edit.textContent = "Edit";
+    edit.onclick = () => startEdit(i);
+    const stop = document.createElement("button");
+    stop.className = "small"; stop.textContent = "Force stop";
+    stop.onclick = () => forceStop(r.pkg);
+    const del = document.createElement("button");
+    del.className = "small danger"; del.textContent = "Delete";
+    del.onclick = () => { rules.splice(i, 1); renderRules(); };
+
+    actions.append(edit, stop, del);
+    row.append(pkg, meta, actions);
+    box.appendChild(row);
+  });
+}
+
+function startEdit(i) {
+  const r = rules[i];
+  editIndex = i;
+  $("pkg").value = r.pkg;
+  $("preset").value = "";
+  FIELDS.forEach((f) => { $(f).value = r[f]; });
+  $("formTitle").textContent = "Edit rule";
+  $("addBtn").textContent = "Update rule";
+  $("cancelBtn").style.display = "";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function forceStop(pkg) {
+  if (!PKG_RE.test(pkg)) return;
+  try {
+    const r = await exec("am force-stop " + pkg);
+    toast(r.errno === 0 ? "Stopped " + pkg : "Failed: " + (r.stderr || r.errno), r.errno === 0);
+  } catch (e) { toast(String(e.message || e), false); }
+}
+
+// ---- Load / save -----------------------------------------------------------
+function parseConfig(text) {
+  const out = [];
+  text.split("\n").forEach((line) => {
+    const t = line.trim();
+    if (!t || t[0] === "#") return;
+    const p = t.split("|");
+    if (p.length < 6) return;
+    out.push({ pkg: p[0].trim(), renderer: p[1].trim(), vendor: p[2].trim(),
+               hw: p[3].trim(), plat: p[4].trim(), soc: p[5].trim() });
+  });
+  return out;
+}
+
+function serializeConfig() {
+  const lines = [HEADER];
+  rules.forEach((r) => lines.push([r.pkg, r.renderer, r.vendor, r.hw, r.plat, r.soc].join("|")));
+  return lines.join("\n") + "\n";
+}
+
+async function load() {
+  try {
+    const r = await exec("cat " + CONFIG_FILE + " 2>/dev/null");
+    rules = r.errno === 0 ? parseConfig(r.stdout || "") : [];
+    renderRules();
+  } catch (e) {
+    rules = [];
+    renderRules();
+    toast(String(e.message || e), false);
+  }
+}
+
+async function save() {
+  try {
+    const b64 = btoa(unescape(encodeURIComponent(serializeConfig())));
+    const cmd = "mkdir -p " + CONFIG_DIR + " && echo '" + b64 + "' | base64 -d > " + CONFIG_FILE +
+                " && chmod 644 " + CONFIG_FILE;
+    const r = await exec(cmd);
+    if (r.errno === 0) toast("Saved " + rules.length + " rule(s). Relaunch the game to apply.", true);
+    else toast("Save failed: " + (r.stderr || r.errno), false);
+  } catch (e) { toast(String(e.message || e), false); }
+}
+
+function loadPackageHints() {
+  try {
+    if (typeof ksu === "undefined" || typeof ksu.listPackages !== "function") return;
+    let list = ksu.listPackages("user");
+    if (typeof list === "string") list = JSON.parse(list);
+    const dl = $("pkgList");
+    list.forEach((p) => {
+      const o = document.createElement("option");
+      o.value = p;
+      dl.appendChild(o);
+    });
+  } catch (e) { /* optional feature */ }
+}
+
+$("addBtn").addEventListener("click", addOrUpdate);
+$("cancelBtn").addEventListener("click", resetForm);
+$("saveBtn").addEventListener("click", save);
+$("reloadBtn").addEventListener("click", load);
+
+initPresets();
+renderRules();
+loadPackageHints();
+load();
+</script>
+</body>
+  </html>
