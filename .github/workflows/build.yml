@@ -47,4 +47,17 @@ jobs:
           mkdir -p module/zygisk
           cp libs/arm64-v8a/libgpuspoofer.so   module/zygisk/arm64-v8a.so
           cp libs/armeabi-v7a/libgpuspoofer.so module/zygisk/armeabi-v7a.so
-          ls
+
+                    ls -l module/zygisk
+
+      - name: Zip module
+        run: |
+          cd module
+          zip -r9 ../PerGameGpuSpoofer.zip . -x '*.DS_Store' -x 'zygisk/.gitkeep'
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PerGameGpuSpoofer
+          path: PerGameGpuSpoofer.zip
+          if-no-files-found: error
