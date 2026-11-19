@@ -1,0 +1,6 @@
+id=per_game_gpu_spoofer
+name=Per-Game GPU Spoofer
+version=v1.0.0
+versionCode=1
+author=KENT
+description=Spoofs GPU and SoC properties strictly per game via Zygisk. Configure games in the WebUI. Requires Zygisk.
