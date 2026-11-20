@@ -92,11 +92,11 @@ const HEADER = "# pkg|renderer|vendor|hw|plat|soc";
 const PKG_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
 
 const PRESETS = {
-  adreno750: { label: "Adreno 750 (Snapdragon 8 Gen 3)", renderer: "Adreno (TM) 750", vendor: "Qualcomm", hw: "qcom", plat: "pineapple", soc: "SM8650" },
-  adreno740: { label: "Adreno 740 (Snapdragon 8 Gen 2)", renderer: "Adreno (TM) 740", vendor: "Qualcomm", hw: "qcom", plat: "kalama", soc: "SM8550" },
-  maliG720:  { label: "Mali-G720 (Dimensity 9300)", renderer: "Mali-G720-Immortalis MC12", vendor: "ARM", hw: "mt6989", plat: "mt6989", soc: "MT6989" },
-  maliG615:  { label: "Mali-G615 (Dimensity 8300)", renderer: "Mali-G615 MC6", vendor: "ARM", hw: "mt6897", plat: "mt6897", soc: "MT6897" },
-  unisoc:    { label: "Unisoc T820 / Mali-G57", renderer: "Mali-G57 MC4", vendor: "ARM", hw: "ums9620", plat: "ums9620", soc: "T820" }
+  adreno750: { label: "Adreno 750 (Galaxy S24 Ultra)", renderer: "Adreno (TM) 750", vendor: "Qualcomm", hw: "qcom", plat: "pineapple", soc: "SM8650", model: "SM-S928B", manufacturer: "samsung", brand: "samsung", device: "dm3q", product: "dm3qxxx" },
+  adreno740: { label: "Adreno 740 (Galaxy S23 Ultra)", renderer: "Adreno (TM) 740", vendor: "Qualcomm", hw: "qcom", plat: "kalama", soc: "SM8550", model: "SM-S918B", manufacturer: "samsung", brand: "samsung", device: "dm1q", product: "dm1qxxx" },
+  maliG720:  { label: "Mali-G720 (vivo X100 Pro)", renderer: "Mali-G720-Immortalis MC12", vendor: "ARM", hw: "mt6989", plat: "mt6989", soc: "MT6989", model: "V2309A", manufacturer: "vivo", brand: "vivo", device: "PD2309", product: "PD2309_GLOBAL" },
+  maliG615:  { label: "Mali-G615 (Poco X6 Pro)", renderer: "Mali-G615 MC6", vendor: "ARM", hw: "mt6897", plat: "mt6897", soc: "MT6897", model: "23113RKC6G", manufacturer: "Xiaomi", brand: "POCO", device: "garnet", product: "garnet_global" },
+  unisoc:    { label: "Unisoc T820 / Mali-G57", renderer: "Mali-G57 MC4", vendor: "ARM", hw: "ums9620", plat: "ums9620", soc: "T820", model: "V2255A", manufacturer: "vivo", brand: "vivo", device: "PD2255", product: "PD2255_GLOBAL" }
 };
 
 let rules = [];
