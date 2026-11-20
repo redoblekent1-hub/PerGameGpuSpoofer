@@ -47,7 +47,7 @@
 </head>
 <body>
 <h1>Per-Game GPU Spoofer</h1>
-<p class="sub">Rules apply only to the listed apps. Real device properties are never changed. Force-stop and relaunch a game after saving.</p>
+<p class="sub">Rules apply only to the listed apps. Real device properties are never changed. Force-stop and relaunch the game after saving.</p>
 
 <div class="card">
   <h2 id="formTitle">Add rule</h2>
@@ -61,11 +61,15 @@
   <div class="grid">
     <div><label for="renderer">GL_RENDERER</label><input id="renderer" autocapitalize="off" spellcheck="false"></div>
     <div><label for="vendor">GL_VENDOR</label><input id="vendor" autocapitalize="off" spellcheck="false"></div>
-    <div><label for="hw">Hardware (ro.hardware)</label><input id="hw" autocapitalize="off" spellcheck="false"></div>
-    <div><label for="plat">Platform (ro.board.platform)</label><input id="plat" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="hw">Hardware</label><input id="hw" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="plat">Platform</label><input id="plat" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="soc">SoC model</label><input id="soc" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="model">Model</label><input id="model" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="manufacturer">Manufacturer</label><input id="manufacturer" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="brand">Brand</label><input id="brand" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="device">Device codename</label><input id="device" autocapitalize="off" spellcheck="false"></div>
+    <div><label for="product">Product</label><input id="product" autocapitalize="off" spellcheck="false"></div>
   </div>
-  <label for="soc">SoC model</label>
-  <input id="soc" autocapitalize="off" spellcheck="false">
 
   <div class="row">
     <button class="primary" id="addBtn">Add rule</button>
@@ -88,8 +92,9 @@
 "use strict";
 const CONFIG_DIR = "/data/adb/gpu_spoofer";
 const CONFIG_FILE = CONFIG_DIR + "/config.txt";
-const HEADER = "# pkg|renderer|vendor|hw|plat|soc";
+const HEADER = "# pkg|renderer|vendor|hw|plat|soc|model|manufacturer|brand|device|product";
 const PKG_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/;
+const FIELDS = ["renderer", "vendor", "hw", "plat", "soc", "model", "manufacturer", "brand", "device", "product"];
 
 const PRESETS = {
   adreno750: { label: "Adreno 750 (Galaxy S24 Ultra)", renderer: "Adreno (TM) 750", vendor: "Qualcomm", hw: "qcom", plat: "pineapple", soc: "SM8650", model: "SM-S928B", manufacturer: "samsung", brand: "samsung", device: "dm3q", product: "dm3qxxx" },
@@ -102,7 +107,6 @@ const PRESETS = {
 let rules = [];
 let editIndex = -1;
 const $ = (id) => document.getElementById(id);
-const FIELDS = ["renderer", "vendor", "hw", "plat", "soc", "model", "manufacturer", "brand", "device", "product"];
 
 // ---- KernelSU bridge -------------------------------------------------------
 function exec(cmd) {
@@ -178,18 +182,22 @@ function resetForm() {
 }
 
 function addOrUpdate() {
-  const r = readForm();
-  const err = validate(r);
-  if (err) { toast(err, false); return; }
-  if (editIndex >= 0) {
-    rules[editIndex] = r;
-  } else {
-    const i = rules.findIndex((x) => x.pkg === r.pkg);
-    if (i >= 0) rules[i] = r; else rules.push(r);
+  try {
+    const r = readForm();
+    const err = validate(r);
+    if (err) { toast(err, false); return; }
+    if (editIndex >= 0) {
+      rules[editIndex] = r;
+    } else {
+      const i = rules.findIndex((x) => x.pkg === r.pkg);
+      if (i >= 0) rules[i] = r; else rules.push(r);
+    }
+    resetForm();
+    renderRules();
+    toast("Rule staged. Press 'Save to config.txt' to apply.", true);
+  } catch (e) {
+    toast("Error: " + (e.message || e), false);
   }
-  resetForm();
-  renderRules();
-  toast("Rule staged. Press 'Save to config.txt' to apply.", true);
 }
 
 // ---- Rules list ------------------------------------------------------------
@@ -210,7 +218,7 @@ function renderRules() {
     pkg.className = "pkg"; pkg.textContent = r.pkg;
     const meta = document.createElement("div");
     meta.className = "meta";
-    meta.textContent = [r.renderer, r.vendor, r.hw, r.plat, r.soc].join("  |  ");
+    meta.textContent = FIELDS.map((f) => r[f] || "-").join("  |  ");
     const actions = document.createElement("div");
     actions.className = "row";
     actions.style.marginTop = "8px";
@@ -236,7 +244,7 @@ function startEdit(i) {
   editIndex = i;
   $("pkg").value = r.pkg;
   $("preset").value = "";
-  FIELDS.forEach((f) => { $(f).value = r[f]; });
+  FIELDS.forEach((f) => { $(f).value = r[f] || ""; });
   $("formTitle").textContent = "Edit rule";
   $("addBtn").textContent = "Update rule";
   $("cancelBtn").style.display = "";
@@ -259,15 +267,16 @@ function parseConfig(text) {
     if (!t || t[0] === "#") return;
     const p = t.split("|");
     if (p.length < 6) return;
-    out.push({ pkg: p[0].trim(), renderer: p[1].trim(), vendor: p[2].trim(),
-               hw: p[3].trim(), plat: p[4].trim(), soc: p[5].trim() });
+    const r = { pkg: (p[0] || "").trim() };
+    FIELDS.forEach((f, i) => { r[f] = (p[i + 1] || "").trim(); });
+    out.push(r);
   });
   return out;
 }
 
 function serializeConfig() {
   const lines = [HEADER];
-  rules.forEach((r) => lines.push([r.pkg, r.renderer, r.vendor, r.hw, r.plat, r.soc].join("|")));
+  rules.forEach((r) => lines.push([r.pkg].concat(FIELDS.map((f) => r[f] || "")).join("|")));
   return lines.join("\n") + "\n";
 }
 
@@ -285,6 +294,8 @@ async function load() {
 
 async function save() {
   try {
+    const bad = rules.find((r) => validate(r));
+    if (bad) { toast("Rule for " + bad.pkg + " is incomplete. Edit it first.", false); return; }
     const b64 = btoa(unescape(encodeURIComponent(serializeConfig())));
     const cmd = "mkdir -p " + CONFIG_DIR + " && echo '" + b64 + "' | base64 -d > " + CONFIG_FILE +
                 " && chmod 644 " + CONFIG_FILE;
@@ -319,4 +330,4 @@ loadPackageHints();
 load();
 </script>
 </body>
-  </html>
+</html>
