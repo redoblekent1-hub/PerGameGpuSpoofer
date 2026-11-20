@@ -293,4 +293,177 @@ static std::vector<std::pair<dev_t, ino_t>> list_libs() {
                        &maj, &min, &ino, path);
         if (n < 8 || ino == 0 || path[0] != '/') continue;
         std::pair<dev_t, ino_t> key(makedev(maj, min), static_cast<ino_t>(ino));
-        if (seen.insert(key).second)
+        if (seen.insert(key).second) out.push_back(key);
+    }
+    fclose(f);
+    return out;
+}
+
+template <typename A>
+static auto plt_reg(A *api, const char *sym, void *nf, void **of, int)
+    -> decltype(api->pltHookRegister(".*", sym, nf, of), void()) {
+    api->pltHookRegister(".*", sym, nf, of);
+}
+
+template <typename A>
+static auto plt_reg(A *api, const char *sym, void *nf, void **of, long)
+    -> decltype(api->pltHookRegister(dev_t(), ino_t(), sym, nf, of), void()) {
+    for (const auto &lib : list_libs()) api->pltHookRegister(lib.first, lib.second, sym, nf, of);
+}
+
+static void *my_dlopen(const char *file, int flags);
+static void *my_dlopen_ext(const char *file, int flags, const android_dlextinfo *info);
+
+static void resolve_originals() {
+    if (!g_orig_glGetString)
+        g_orig_glGetString = reinterpret_cast<glGetString_t>(dlsym(RTLD_DEFAULT, "glGetString"));
+    if (!g_orig_prop_get)
+        g_orig_prop_get = reinterpret_cast<prop_get_t>(dlsym(RTLD_DEFAULT, "__system_property_get"));
+    if (!g_orig_prop_read_cb)
+        g_orig_prop_read_cb = reinterpret_cast<prop_read_cb_t>(
+            dlsym(RTLD_DEFAULT, "__system_property_read_callback"));
+    if (!g_orig_dlopen) g_orig_dlopen = reinterpret_cast<dlopen_t>(dlsym(RTLD_DEFAULT, "dlopen"));
+    if (!g_orig_dlopen_ext)
+        g_orig_dlopen_ext =
+            reinterpret_cast<dlopen_ext_t>(dlsym(RTLD_DEFAULT, "android_dlopen_ext"));
+}
+
+static void apply_hooks() {
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (!g_api) return;
+    resolve_originals();
+    plt_reg(g_api, "glGetString", reinterpret_cast<void *>(my_glGetString), &g_dummy[0], 0);
+    plt_reg(g_api, "__system_property_get", reinterpret_cast<void *>(my_prop_get), &g_dummy[1], 0);
+    plt_reg(g_api, "__system_property_read_callback", reinterpret_cast<void *>(my_prop_read_cb),
+            &g_dummy[2], 0);
+    plt_reg(g_api, "dlopen", reinterpret_cast<void *>(my_dlopen), &g_dummy[3], 0);
+    plt_reg(g_api, "android_dlopen_ext", reinterpret_cast<void *>(my_dlopen_ext), &g_dummy[4], 0);
+    g_api->pltHookCommit();
+}
+
+static void after_load(void *handle) {
+    if (!handle || t_in_hook) return;
+    t_in_hook = true;
+    apply_hooks();  // hook libraries that were just loaded by the game
+    t_in_hook = false;
+}
+
+static void *my_dlopen(const char *file, int flags) {
+    void *h = g_orig_dlopen ? g_orig_dlopen(file, flags) : nullptr;
+    after_load(h);
+    return h;
+}
+
+static void *my_dlopen_ext(const char *file, int flags, const android_dlextinfo *info) {
+    void *h = g_orig_dlopen_ext ? g_orig_dlopen_ext(file, flags, info) : nullptr;
+    after_load(h);
+    return h;
+}
+
+// ---------------------------------------------------------------------------
+// android.os.Build overwrite
+// ---------------------------------------------------------------------------
+static void set_build_field(JNIEnv *env, jclass cls, const char *field, const std::string &val) {
+    if (val.empty()) return;
+    jfieldID fid = env->GetStaticFieldID(cls, field, "Ljava/lang/String;");
+    if (!fid) {
+        env->ExceptionClear();  // e.g. SOC_* does not exist below Android 12
+        return;
+    }
+    jstring s = env->NewStringUTF(val.c_str());
+    if (!s) {
+        env->ExceptionClear();
+        return;
+    }
+    env->SetStaticObjectField(cls, fid, s);
+    env->DeleteLocalRef(s);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+}
+
+static void override_build(JNIEnv *env) {
+    jclass cls = env->FindClass("android/os/Build");
+    if (!cls) {
+        env->ExceptionClear();
+        return;
+    }
+    set_build_field(env, cls, "HARDWARE", g_spoof.hw);
+    set_build_field(env, cls, "BOARD", g_spoof.plat);
+    set_build_field(env, cls, "SOC_MANUFACTURER", g_spoof.soc_mfr);
+    set_build_field(env, cls, "SOC_MODEL", g_spoof.soc);
+    set_build_field(env, cls, "MODEL", g_spoof.model);
+    set_build_field(env, cls, "MANUFACTURER", g_spoof.manufacturer);
+    set_build_field(env, cls, "BRAND", g_spoof.brand);
+    set_build_field(env, cls, "DEVICE", g_spoof.device);
+    set_build_field(env, cls, "PRODUCT", g_spoof.product);
+    env->DeleteLocalRef(cls);
+}
+
+// ---------------------------------------------------------------------------
+// Zygisk module
+// ---------------------------------------------------------------------------
+static std::string jstr(JNIEnv *env, jstring s) {
+    if (!s) return "";
+    const char *c = env->GetStringUTFChars(s, nullptr);
+    if (!c) return "";
+    std::string r(c);
+    env->ReleaseStringUTFChars(s, c);
+    return r;
+}
+
+void preAppSpecialize(zygisk::AppSpecializeArgs *args) override {
+        matched_ = false;
+        std::string name = jstr(env_, args->nice_name);
+        size_t colon = name.find(':');
+        if (colon != std::string::npos) name.resize(colon);  // com.pkg:service -> com.pkg
+
+        if (!name.empty()) {
+            std::string line = query_companion(name);
+            if (!line.empty() && parse_rule(line, g_spoof)) matched_ = true;
+        }
+        if (!matched_) {
+            api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+        }
+    }
+
+    void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
+        if (!matched_) return;
+        LOGI("spoofing %s -> render=%s/%s hw=%s plat=%s soc=%s model=%s mfr=%s brand=%s dev=%s prod=%s",
+             g_spoof.pkg.c_str(), g_spoof.renderer.c_str(), g_spoof.vendor.c_str(),
+             g_spoof.hw.c_str(), g_spoof.plat.c_str(), g_spoof.soc.c_str(), g_spoof.model.c_str(),
+             g_spoof.manufacturer.c_str(), g_spoof.brand.c_str(), g_spoof.device.c_str(),
+             g_spoof.product.c_str());
+        override_build(env_);
+        g_api = api_;
+        apply_hooks();
+    }
+
+    void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
+        api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+    }
+
+private:
+    zygisk::Api *api_ = nullptr;
+    JNIEnv *env_ = nullptr;
+    bool matched_ = false;
+
+    std::string query_companion(const std::string &pkg) {
+        int fd = api_->connectCompanion();
+        if (fd < 0) {
+            LOGW("connectCompanion failed");
+            return "";
+        }
+        std::string result;
+        uint32_t len = static_cast<uint32_t>(pkg.size());
+        uint32_t rlen = 0;
+        if (write_full(fd, &len, sizeof(len)) && write_full(fd, pkg.data(), len) &&
+            read_full(fd, &rlen, sizeof(rlen)) && rlen > 0 && rlen <= 4096) {
+            result.resize(rlen);
+            if (!read_full(fd, &result[0], rlen)) result.clear();
+        }
+        close(fd);
+        return result;
+    }
+};
+
+REGISTER_ZYGISK_MODULE(GpuSpooferModule)
+REGISTER_ZYGISK_COMPANION(companion_handler)
